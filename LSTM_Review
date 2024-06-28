@@ -1,0 +1,156 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"
+import tensorflow as tf
+import numpy as np
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers import Adam
+tf.random.set_seed(22)
+np.random.seed(22)
+assert tf.__version__.startswith('2.')
+
+batch_size = 128
+total_words = 10000
+max_review_len = 80
+embedding_len = 100
+(x_train, y_train), (x_test, y_test) = tf.keras.datasets.imdb.load_data(num_words=total_words)
+
+x_train = tf.keras.preprocessing.sequence.pad_sequences(x_train, maxlen=max_review_len)
+x_test = tf.keras.preprocessing.sequence.pad_sequences(x_test, maxlen=max_review_len)
+
+train_data = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+train_data = train_data.shuffle(10000).batch(batch_size, drop_remainder=True)
+test_data = tf.data.Dataset.from_tensor_slices((x_test, y_test))
+test_data = test_data.batch(batch_size, drop_remainder=True)
+print('x_train_shape:', x_train.shape, tf.reduce_max(y_train), tf.reduce_min(y_train))
+print('x_test_shape:', x_test.shape)
+
+sample = next(iter(test_data))
+print(sample[0].shape)
+# RNN_Build
+class RNN_Build(tf.keras.Model):
+    def __init__(self, units):
+        super(RNN_Build, self).__init__()
+
+        self.state0 = [tf.zeros([batch_size, units])]
+        self.state1 = [tf.zeros([batch_size, units])]
+        self.embedding = tf.keras.layers.Embedding(total_words, embedding_len, input_length=max_review_len)
+
+        self.RNNCell0 = tf.keras.layers.SimpleRNNCell(units, dropout=0.2)
+        self.RNNCell1 = tf.keras.layers.SimpleRNNCell(units, dropout=0.2)
+        self.outlayer = tf.keras.layers.Dense(1)
+
+    def call(self, inputs, training=None):
+        x = inputs
+        x = self.embedding(x)
+        state0 = self.state0
+        state1 = self.state1
+        for word in tf.unstack(x, axis=1):
+            out0, state0 = self.RNNCell0(word, state0, training)
+            out1, state1 = self.RNNCell1(out0, state1, training)
+        x = self.outlayer(out1)
+        prob = tf.sigmoid(x)
+        return prob
+# 모델 훈련
+import time
+units = 64
+epochs = 4
+t0 = time.time()
+
+model = RNN_Build(units)
+model.compile(optimizer=tf.keras.optimizers.Adam(0.001),
+              loss=tf.losses.BinaryCrossentropy(),
+              metrics=['accuracy'],
+              experimental_run_tf_function=False)
+
+model.fit(train_data, epochs=epochs, validation_data=test_data, validation_freq=2)
+
+# 모델 평가
+print("훈련 데이터셋 평가...")
+(loss, accuracy) = model.evaluate(train_data, verbose=0)
+print("loss={:.4f}, accuracy: {:.4f}%".format(loss,accuracy * 100))
+print("테스트 데이터셋 평가...")
+(loss, accuracy) = model.evaluate(test_data, verbose=0)
+print("loss={:.4f}, accuracy: {:.4f}%".format(loss,accuracy * 100))
+t1 = time.time()
+print('시간:', t1-t0)
+
+import re
+from keras.preprocessing.sequence import pad_sequences
+
+def sentiment_predict(new_sentence):
+    # 알파벳과 숫자를 제외하고 모두 제거 및 알파벳 소문자화
+    new_sentence = re.sub('[^0-9a-zA-Z ]', '', new_sentence).lower()
+    encoded = []
+
+    # 띄어쓰기 단위 토큰화 후 정수 인코딩
+    word_to_index = tf.keras.datasets.imdb.get_word_index()
+    for word in new_sentence.split():
+        try:
+            # 단어 집합의 크기를 10,000으로 제한.
+            if word_to_index[word] <= 10000:
+                encoded.append(word_to_index[word] + 3)
+            else:
+                # 10,000 이상의 숫자는 <unk> 토큰으로 변환.
+                encoded.append(2)
+        except KeyError:
+            # 단어 집합에 없는 단어는 <unk> 토큰으로 변환.
+            encoded.append(2)
+    pad_sequence = pad_sequences([encoded], maxlen=max_review_len)
+    score = float(model.predict(pad_sequence)[0])  # 예측
+
+    if score > 0.5:
+        print("{:.2f}% 확률로 긍정 리뷰입니다.".format(score * 100))
+    else:
+        print("{:.2f}% 확률로 부정 리뷰입니다.".format((1 - score) * 100))
+
+# 가상의 긍정 리뷰
+positive_test_input = "David Oh is so kind"
+
+# 가상의 부정 리뷰
+negative_test_input = "I really disliked this film. It was a waste of time."
+
+# 긍정 리뷰에 대한 감정 예측
+print("Positive Review Prediction:")
+sentiment_predict(positive_test_input)
+
+# 부정 리뷰에 대한 감정 예측
+print("\nNegative Review Prediction:")
+sentiment_predict(negative_test_input)
+
+# KoNLPy 설치
+!pip install konlpy
+from google.colab import drive
+# 드라이브 마운트
+drive.mount('/content/drive')
+import csv
+from konlpy.tag import Okt
+from gensim.models import word2vec
+# ratings_train.txt 파일을 Google 드라이브에 업로드한 경우
+file_path = '/content/drive/MyDrive/ratings_train.txt'
+# 파일 열기
+with open(file_path, 'r', encoding='utf-8') as f:
+    rdr = csv.reader(f, delimiter='\t')
+    rdw = list(rdr)
+
+twitter = Okt()
+
+result = []
+for line in rdw:
+    malist = twitter.pos( line[1], norm=True, stem=True)
+    r = []
+    for word in malist:
+        if not word[1] in ["Josa","Eomi","Punctuation"]:
+            r.append(word[0])
+    rl = (" ".join(r)).strip()
+    result.append(rl)
+    print(rl)
+
+with open("NaverMovie.nlp",'w', encoding='utf-8') as fp:
+    fp.write("\n".join(result))
+mData = word2vec.LineSentence("NaverMovie.nlp")
+mModel =word2vec.Word2Vec(mData, size=200, window=10, hs=1, min_count=2, sg=1)
+model_path = "/content/drive/MyDrive/NaverMovie.model"
+mModel.save("NaverMovie.model")
